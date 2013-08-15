@@ -16,11 +16,15 @@
 
 package com.example.android.snake;
 
+import java.util.HashMap;
+import java.util.Random;
+
 import android.app.Activity;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
+import android.graphics.Bitmap;
 import android.os.Bundle;
 import android.os.IBinder;
 import android.util.Log;
@@ -28,6 +32,13 @@ import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.View.OnTouchListener;
+import android.view.ViewGroup.LayoutParams;
+import android.widget.CheckBox;
+import android.widget.CompoundButton;
+import android.widget.CompoundButton.OnCheckedChangeListener;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.RelativeLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -50,7 +61,6 @@ public class Snake extends Activity implements IChordServiceListener {
 	private static final String TAG = "[Chord][ApiTest]";
     private static final String TAGClass = "SnakeActivity : ";
     private String mChannelName = "";
-    private String mNodeName = "";
     /**
      * Constants for desired direction of moving the snake
      */
@@ -63,6 +73,18 @@ public class Snake extends Activity implements IChordServiceListener {
 
     private SnakeView mSnakeView;
 
+    private SnakeMessage mSnakeMessage;
+    
+    private CheckBox mIamReadyCheckbox;
+    
+    private RelativeLayout mPlayersContainer;
+    
+    private LinearLayout mPlayersLinearLayout;
+    
+	private HashMap<String, SnakePlayer> mPlayers;
+	
+	private String mName;
+	private Integer mColor;
     /**
      * Called when Activity is first created. Turns off the title bar, sets up the content views,
      * and fires up the SnakeView.
@@ -72,12 +94,35 @@ public class Snake extends Activity implements IChordServiceListener {
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+		mPlayers = new HashMap<String, SnakePlayer>();
         setContentView(R.layout.snake_layout);
 
+        mName = getActivity().getSharedPreferences("snake", MODE_PRIVATE).getString("name", "Anonymouse");
+        
+        mPlayersContainer = (RelativeLayout)findViewById(R.id.playersContainer);
+        mPlayersLinearLayout = (LinearLayout)findViewById(R.id.playersList);
+        
+        mIamReadyCheckbox = (CheckBox) findViewById(R.id.iamready);
+        mIamReadyCheckbox.setOnCheckedChangeListener(new OnCheckedChangeListener() {
+			@Override
+			public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+				sendState(isChecked);
+				checkStateAndStartGame();
+			}
+		});
+        
         mSnakeView = (SnakeView) findViewById(R.id.snake);
+        Random r = new Random();
+		mColor = r.nextInt(7) + 1;
+        ImageView mycolor = (ImageView)findViewById(R.id.mycolor);
+        Bitmap[] bitmaps = mSnakeView.getTileArray();
+        mycolor.setImageBitmap(bitmaps[mColor]);
+
+        mSnakeView.color = mColor;
+        
         mSnakeView.setDependentViews((TextView) findViewById(R.id.text),
                 findViewById(R.id.arrowContainer), findViewById(R.id.background));
-
+        mSnakeMessage = new SnakeMessage();
         if (savedInstanceState == null) {
             // We were just launched -- set up a new game
             mSnakeView.setMode(SnakeView.READY);
@@ -106,12 +151,14 @@ public class Snake extends Activity implements IChordServiceListener {
 
                     // Direction is same as the quadrant which was clicked
                     mSnakeView.moveSnake(direction);
-                    String message = String.valueOf(direction);
-                    mChordService.sendDataToAll(mChannelName, message.getBytes());
+                    mSnakeMessage.setAction(SnakeMessage.ACTION_MOVE);
+                    sendData();
                 } else {
                     // If the game is not running then on touching any part of the screen
                     // we start the game by sending MOVE_UP signal to SnakeView
                     mSnakeView.moveSnake(MOVE_UP);
+                    mSnakeMessage.setAction(SnakeMessage.ACTION_MOVE); //???????????????????????
+                    sendData();
                 }
                 return false;
             }
@@ -133,6 +180,12 @@ public class Snake extends Activity implements IChordServiceListener {
     }
 
     @Override
+    protected void onStop() {
+        super.onStop();
+        sendState(false);
+    }
+    
+    @Override
     public void onSaveInstanceState(Bundle outState) {
         // Store the game state
         outState.putBundle(ICICLE_KEY, mSnakeView.saveState());
@@ -145,23 +198,73 @@ public class Snake extends Activity implements IChordServiceListener {
      */
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent msg) {
-
-        switch (keyCode) {
+		switch (keyCode) {
             case KeyEvent.KEYCODE_DPAD_UP:
                 mSnakeView.moveSnake(MOVE_UP);
+                mSnakeMessage.setAction(SnakeMessage.ACTION_MOVE);
+                sendData();
                 break;
             case KeyEvent.KEYCODE_DPAD_RIGHT:
                 mSnakeView.moveSnake(MOVE_RIGHT);
+                mSnakeMessage.setAction(SnakeMessage.ACTION_MOVE);
+                sendData();
                 break;
             case KeyEvent.KEYCODE_DPAD_DOWN:
                 mSnakeView.moveSnake(MOVE_DOWN);
+                mSnakeMessage.setAction(SnakeMessage.ACTION_MOVE);
+                sendData();
                 break;
             case KeyEvent.KEYCODE_DPAD_LEFT:
                 mSnakeView.moveSnake(MOVE_LEFT);
+                mSnakeMessage.setAction(SnakeMessage.ACTION_MOVE);
+                sendData();
                 break;
         }
 
         return super.onKeyDown(keyCode, msg);
+    }
+ 
+    private void checkStateAndStartGame() {
+    	if (mPlayers.size() == 0) {
+    		return;
+    	}
+    	boolean startGame = mIamReadyCheckbox.isChecked();
+		for (String n : mPlayers.keySet()) {
+    		SnakePlayer p = mPlayers.get(n);
+    		startGame &= p.ready;
+    	}
+		if (startGame) {
+			mPlayersContainer.setVisibility(View.GONE);
+		}
+    }
+    
+    private void updateViewWithPlayersList() {
+    	mPlayersLinearLayout.removeAllViews();
+    	for (String node : mPlayers.keySet()) {
+    		SnakePlayer p = mPlayers.get(node);
+    		Log.d(TAG, TAGClass + "Player="+p.toString());
+    		TextView text = new TextView(getActivity(), null, android.R.attr.textAppearanceLarge);
+    		text.setText(String.format("%s is ready - %s", p.name, p.ready ? "OK" : "NOT"));
+    		text.setLayoutParams(new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
+    		mPlayersLinearLayout.addView(text);
+    	}
+    }
+    
+    private void sendState(boolean isChecked) {
+		if (isChecked) {
+			mSnakeMessage.setAction(SnakeMessage.ACTION_READY);
+		} else {
+			mSnakeMessage.setAction(SnakeMessage.ACTION_REFUSE);
+		}
+		sendData();
+		Log.d(TAG, TAGClass + "onCheckedChanged() message="+mSnakeMessage.toString());
+    }
+    
+    private void sendData() {
+    	mSnakeMessage.setPlayer(mName, mSnakeView.getSnakeTrailCoordinates(), mColor, mSnakeView.getMoveDelay(), mSnakeView.getDirection());
+    	Log.d(TAG, TAGClass + "sendData() message="+mSnakeMessage.toString());
+    	mChordService.sendDataToAll(mChannelName, mSnakeMessage.toString().getBytes());
+    	mSnakeMessage.reset();
     }
  
     // **********************************************************************
@@ -220,6 +323,7 @@ public class Snake extends Activity implements IChordServiceListener {
             mChordService = null;
         }
     };
+
     public void bindChordService() {
         Log.i(TAG, TAGClass + "bindChordService()");
         if (mChordService == null) {
@@ -261,12 +365,33 @@ public class Snake extends Activity implements IChordServiceListener {
     
 	@Override
 	public void onReceiveMessage(String node, String channel, String message) {
-		// TODO Auto-generated method stub
 		Log.v(TAG, TAGClass + "onReceiveMessage node="+node+" channel="+channel+" message="+message);
-		int direction = Integer.parseInt(message);
-		if (0 <= direction && direction <= 3) {
-			mSnakeView.moveSnake(direction);
+		mSnakeMessage.load(message);
+		SnakePlayer p = mSnakeMessage.getPlayer();
+		if (p == null) {
+			return;
 		}
+		switch (mSnakeMessage.getAction()) {
+		case SnakeMessage.ACTION_MOVE:
+			p.ready = true;
+			mPlayers.put(node, p);
+			updateViewWithPlayersList();
+			break;
+		case SnakeMessage.ACTION_READY:
+			p.ready = true;
+			mPlayers.put(node, p);
+			updateViewWithPlayersList();
+			checkStateAndStartGame();
+			break;
+		case SnakeMessage.ACTION_REFUSE:
+			mPlayers.put(node, p);
+			updateViewWithPlayersList();
+			break;
+		default:
+			mPlayers.put(node, p);
+			break;
+		}
+		mSnakeView.updatePlayers(mPlayers);
 	}
 
 	@Override
@@ -294,7 +419,9 @@ public class Snake extends Activity implements IChordServiceListener {
 	public void onNodeEvent(String node, String channel, boolean bJoined) {
 		// TODO Auto-generated method stub
 		Log.v(TAG, TAGClass + "onNodeEvent node="+node+" channel="+channel+" bJoined="+bJoined);
-		mNodeName = node;
+		if (bJoined) {
+			sendState(mIamReadyCheckbox.isChecked()); 
+		}
 	}
 
 	@Override
